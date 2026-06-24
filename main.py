@@ -11,9 +11,12 @@ from contextlib import asynccontextmanager
 import websockets
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
+from fastapi.responses import FileResponse, PlainTextResponse
 import uvicorn
+import zipfile
+import io
 
 # CSV logging (optional — works locally, silently skipped if filesystem is read-only)
 try:
@@ -862,6 +865,84 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return DASHBOARD_HTML
+
+@app.get("/download-all")
+def download_all():
+    if not os.path.exists(LOG_FILE):
+        raise HTTPException(status_code=404, detail="No log file yet")
+
+    try:
+        import csv as csv_mod
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        rows = []
+        with open(LOG_FILE, newline="") as f:
+            reader = csv_mod.reader(f)
+            for row in reader:
+                rows.append(row)
+
+        if not rows:
+            raise HTTPException(status_code=404, detail="Log file is empty")
+
+        timestamps  = [float(r[0]) for r in rows]
+        tracks      = [r[1] for r in rows]
+        level_idxs  = [r[2] for r in rows]
+        heart_rates = [int(r[4]) for r in rows]
+        calm_scores = [float(r[6]) for r in rows]
+
+        t0 = min(timestamps)
+        time_s = [t - t0 for t in timestamps]
+
+        groups = {}
+        for i, (tr, li) in enumerate(zip(tracks, level_idxs)):
+            key = (tr, li)
+            groups.setdefault(key, []).append(i)
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+        for (tr, li), idxs in groups.items():
+            label = f"{tr} L{int(li)+1}" if int(li) >= 0 else "No level"
+            xs = [time_s[i] for i in idxs]
+            ax1.plot(xs, [heart_rates[i] for i in idxs], label=label)
+            ax2.plot(xs, [calm_scores[i] for i in idxs], label=label)
+
+        ax1.set_ylabel("Heart Rate (BPM)")
+        ax1.set_title("Heart Rate per Level")
+        ax1.legend()
+        ax2.set_ylabel("Calm Score")
+        ax2.set_title("Calm Score per Level")
+        ax2.set_xlabel("Time (s)")
+        ax2.legend()
+        plt.tight_layout()
+
+        plot_buf = io.BytesIO()
+        plt.savefig(plot_buf, format="png", dpi=150)
+        plt.close(fig)
+        plot_buf.seek(0)
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(LOG_FILE, "biofeedback_log.csv")
+            zf.writestr("biofeedback_plot.png", plot_buf.read())
+        zip_buf.seek(0)
+
+        return StreamingResponse(zip_buf, media_type="application/zip",
+                                 headers={"Content-Disposition": "attachment; filename=biofeedback_session.zip"})
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/clear-log")
+def clear_log():
+    removed = []
+    for f in [LOG_FILE, "biofeedback_plot.png"]:
+        if os.path.exists(f):
+            os.remove(f)
+            removed.append(f)
+    return {"ok": True, "removed": removed}
 
 
 # ─────────────────────────────────────────────
