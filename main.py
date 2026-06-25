@@ -72,7 +72,7 @@ def effective_heart_rate() -> int:
     return state["heart_rate"]
 
 
-MAX_STRESS_MULTIPLIER = 1.571  # HR at 1.4× baseline = score 0.0 (max stress)
+MAX_STRESS_MULTIPLIER = 1.4  # HR at 1.4× baseline = score 0.0 (max stress)
 
 def get_calm_score() -> float:
     """
