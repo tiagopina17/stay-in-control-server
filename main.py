@@ -1139,6 +1139,9 @@ def download_all():
             reader = csv_mod.reader(f)
             for row in reader:
                 rows.append(row)
+                
+        if rows and rows[0][0] == "timestamp":
+            rows.pop(0)
 
         if not rows:
             raise HTTPException(status_code=404, detail="Log file is empty")
@@ -1156,22 +1159,40 @@ def download_all():
         for i, (tr, li) in enumerate(zip(tracks, level_idxs)):
             key = (tr, li)
             groups.setdefault(key, []).append(i)
+        
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+        # Plot the continuous lines
+        ax1.plot(time_s, heart_rates, color='crimson', linewidth=2)
+        ax2.plot(time_s, calm_scores, color='dodgerblue', linewidth=2)
 
-        for (tr, li), idxs in groups.items():
-            label = f"{tr} L{int(li)+1}" if int(li) >= 0 else "No level"
-            xs = [time_s[i] for i in idxs]
-            ax1.plot(xs, [heart_rates[i] for i in idxs], label=label)
-            ax2.plot(xs, [calm_scores[i] for i in idxs], label=label)
+        # Find where the level actually changes to draw vertical dividers
+        current_level_key = None
+        for i in range(len(time_s)):
+            key = (tracks[i], level_idxs[i])
+            if key != current_level_key:
+                current_level_key = key
+                t_change = time_s[i]
+                
+                # Format the label (e.g., "Spiders L1")
+                tr = tracks[i]
+                li = int(level_idxs[i])
+                label = f"{tr} L{li+1}" if li >= 0 else "Menu / No Level"
+                
+                # Draw vertical lines
+                ax1.axvline(x=t_change, color='gray', linestyle='--', alpha=0.7)
+                ax2.axvline(x=t_change, color='gray', linestyle='--', alpha=0.7)
+                
+                # Add text labels at the top of the HR graph
+                ax1.text(t_change + 1, max(heart_rates) * 0.95, label, 
+                         rotation=90, color='gray', verticalalignment='top')
 
         ax1.set_ylabel("Heart Rate (BPM)")
-        ax1.set_title("Heart Rate per Level")
-        ax1.legend()
+        ax1.set_title("Session Heart Rate")
         ax2.set_ylabel("Calm Score")
-        ax2.set_title("Calm Score per Level")
-        ax2.set_xlabel("Time (s)")
-        ax2.legend()
+        ax2.set_title("Session Calm Score")
+        ax2.set_xlabel("Time (seconds)")
+        
         plt.tight_layout()
 
         plot_buf = io.BytesIO()
