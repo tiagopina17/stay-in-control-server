@@ -178,15 +178,18 @@ async def simulate_hr_task():
     import math
     t = 0.0
     while True:
-        if state["simulate_mode"] and not state["simulate_pinned"]:
-            amp = state["simulate_amplitude"]
-            baseline = state["baseline"]
-            # period ~20 s — slow enough to watch the calm bar move
-            state["simulate_hr"] = max(30, round(baseline + amp * math.sin(t * 0.314)))
-            state["last_update"] = time.time()
-            t += 1.0
+        if state["simulate_mode"]:
+            if not state["simulate_pinned"]:
+                amp = state["simulate_amplitude"]
+                baseline = state["baseline"]
+                # period ~20 s — slow enough to watch the calm bar move
+                state["simulate_hr"] = max(30, round(baseline + amp * math.sin(t * 0.314)))
+                state["last_update"] = time.time()
+                t += 1.0
+            
+            log_data()
+            
         await asyncio.sleep(1.0)
-
 
 def start_simulate_thread():
     loop = asyncio.new_event_loop()
