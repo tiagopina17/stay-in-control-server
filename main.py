@@ -361,18 +361,27 @@ def recording_start():
     global _recording_active, _recording_rows, _recording_error, _recording_start, _log_enabled
     if _recording_active:
         return {"ok": True, "already_running": True, "rows": _recording_rows}
-    # probe the filesystem before committing
+    
+    # 1. Delete the old file if it exists so we start fresh
+    if os.path.exists(LOG_FILE):
+        try:
+            os.remove(LOG_FILE)
+        except OSError as e:
+            raise HTTPException(status_code=503, detail=f"Cannot delete old log file: {e}")
+
+    # 2. Probe the filesystem before committing (using 'w' to create a fresh empty file)
     try:
-        with open(LOG_FILE, "a", newline="") as f:
-            pass  # just check we can open it
+        with open(LOG_FILE, "w", newline="") as f:
+            pass 
     except OSError as e:
         raise HTTPException(status_code=503, detail=f"Filesystem is read-only — cannot create log file: {e}")
+        
     _recording_active = True
     _recording_rows = 0
     _recording_error = None
     _recording_start = time.time()
     _log_enabled = True
-    print(f"[Recording] Started -> {LOG_FILE}")
+    print(f"[Recording] Started -> {LOG_FILE} (Previous data cleared)")
     return {"ok": True, "log_file": LOG_FILE}
 
 
