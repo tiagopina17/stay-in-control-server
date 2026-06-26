@@ -58,6 +58,12 @@ state = {
 LOG_FILE = os.environ.get("LOG_FILE", "biofeedback_log.csv")
 _log_enabled = True  # flipped to False if writing fails (e.g. read-only cloud FS)
 
+# ── Recording state ──────────────────────────────────────────────────────────
+_recording_active = False   # True while we're writing rows
+_recording_rows   = 0       # rows written in current session
+_recording_error  = None    # last write-error message (None = OK)
+_recording_start  = None    # time.time() when recording started
+
 current_level = {
     "track": "None",
     "level_index": -1,
@@ -72,7 +78,7 @@ def effective_heart_rate() -> int:
     return state["heart_rate"]
 
 
-MAX_STRESS_MULTIPLIER = 1.4  # HR at 1.4× baseline = score 0.0 (max stress)
+MAX_STRESS_MULTIPLIER = 1.4
 
 def get_calm_score() -> float:
     """
@@ -103,12 +109,19 @@ def is_calm() -> bool:
 
 
 def log_data():
-    global _log_enabled
-    if not _log_enabled or not _CSV_AVAILABLE:
+    """Write one row. Called from pulsoid_listener and simulate_hr_task."""
+    global _log_enabled, _recording_rows, _recording_error
+    if not _recording_active or not _CSV_AVAILABLE:
         return
     try:
+        file_exists = os.path.exists(LOG_FILE)
         with open(LOG_FILE, "a", newline="") as f:
             writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow([
+                    "timestamp", "track", "level_index", "level_name",
+                    "heart_rate", "baseline", "calm_score", "is_calm"
+                ])
             writer.writerow([
                 time.time(),
                 current_level["track"],
@@ -119,9 +132,13 @@ def log_data():
                 get_calm_score(),
                 is_calm()
             ])
+        _recording_rows += 1
+        _recording_error = None
+        _log_enabled = True
     except OSError as e:
-        print(f"[Log] Cannot write to {LOG_FILE}: {e}. Logging disabled.")
-        _log_enabled = False
+        msg = f"Cannot write to {LOG_FILE}: {e}"
+        print(f"[Log] {msg}")
+        _recording_error = msg
 
 
 # ─────────────────────────────────────────────
@@ -330,6 +347,55 @@ def set_level(body: LevelUpdate):
     current_level["level_index"] = body.level_index
     current_level["level_name"] = body.level_name
     return {"ok": True}
+
+
+# ─────────────────────────────────────────────
+# RECORDING ENDPOINTS
+# ─────────────────────────────────────────────
+
+@app.post("/recording/start")
+def recording_start():
+    global _recording_active, _recording_rows, _recording_error, _recording_start, _log_enabled
+    if _recording_active:
+        return {"ok": True, "already_running": True, "rows": _recording_rows}
+    # probe the filesystem before committing
+    try:
+        with open(LOG_FILE, "a", newline="") as f:
+            pass  # just check we can open it
+    except OSError as e:
+        raise HTTPException(status_code=503, detail=f"Filesystem is read-only — cannot create log file: {e}")
+    _recording_active = True
+    _recording_rows = 0
+    _recording_error = None
+    _recording_start = time.time()
+    _log_enabled = True
+    print(f"[Recording] Started -> {LOG_FILE}")
+    return {"ok": True, "log_file": LOG_FILE}
+
+
+@app.post("/recording/stop")
+def recording_stop():
+    global _recording_active
+    rows = _recording_rows
+    _recording_active = False
+    print(f"[Recording] Stopped. Rows written: {rows}")
+    return {"ok": True, "rows_written": rows, "log_file": LOG_FILE}
+
+
+@app.get("/recording/status")
+def recording_status():
+    elapsed = round(time.time() - _recording_start, 1) if _recording_start and _recording_active else None
+    file_exists = os.path.exists(LOG_FILE)
+    file_size = os.path.getsize(LOG_FILE) if file_exists else 0
+    return {
+        "active": _recording_active,
+        "rows": _recording_rows,
+        "elapsed_seconds": elapsed,
+        "log_file": LOG_FILE,
+        "file_exists": file_exists,
+        "file_size_bytes": file_size,
+        "last_error": _recording_error,
+    }
 
 
 # ─────────────────────────────────────────────
@@ -570,6 +636,45 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     color: var(--muted);
     margin-top: 0.4rem;
   }
+
+  button.danger {
+    border-color: var(--warn);
+    color: var(--warn);
+  }
+  button.danger:hover { background: rgba(255,107,74,0.08); }
+
+  button.recording {
+    border-color: var(--warn);
+    color: var(--warn);
+    animation: pulse-border 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse-border {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255,107,74,0.0); }
+    50%       { box-shadow: 0 0 0 3px rgba(255,107,74,0.3); }
+  }
+
+  .rec-status {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+    margin-top: 0.6rem;
+    min-height: 1.2em;
+  }
+  .rec-status.ok   { color: var(--accent); }
+  .rec-status.err  { color: var(--warn); }
+
+  .error-box {
+    background: rgba(255,107,74,0.08);
+    border: 1px solid rgba(255,107,74,0.35);
+    border-radius: 3px;
+    padding: 0.65rem 0.9rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--warn);
+    margin-top: 0.8rem;
+    line-height: 1.5;
+    display: none;
+  }
 </style>
 </head>
 <body>
@@ -667,12 +772,35 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Recording -->
+  <div class="card" id="recording-card">
+    <div class="card-label">Session Recording <span id="rec-badge" style="display:none;color:var(--warn);margin-left:0.5rem">● REC</span></div>
+    <p style="font-size:0.72rem;color:var(--muted);font-family:var(--mono);margin-bottom:0.8rem">
+      Writes HR + calm score to <code style="color:var(--accent)">biofeedback_log.csv</code> on the server.<br>
+      Start before playing; stop when done.
+    </p>
+    <button id="rec-toggle-btn" onclick="toggleRecording()">Start recording</button>
+    <div id="rec-status" class="rec-status">Not recording.</div>
+    <div id="rec-error-box" class="error-box"></div>
+  </div>
+
+  <!-- Download -->
+  <div class="card">
+    <div class="card-label">Download Session Data</div>
+    <p style="font-size:0.72rem;color:var(--muted);font-family:var(--mono);margin-bottom:0.8rem">
+      Downloads a <code style="color:var(--accent)">.zip</code> with the CSV log and a heart-rate/calm-score plot PNG.
+    </p>
+    <button onclick="downloadAll()">Download all (CSV + chart)</button>
+    <div id="dl-error-box" class="error-box"></div>
+  </div>
+
 </div>
 
 <script>
   let currentThreshold = 0.80;
   let forceSkipActive = false;
   let simulateActive = false;
+  let recordingActive = false;
 
   function updateThresholdDisplay(val) {
     document.getElementById('threshold-range-val').textContent = parseFloat(val).toFixed(2);
@@ -694,6 +822,126 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     const simBtn   = document.getElementById('sim-toggle-btn');
     simBadge.style.display = simulateActive ? 'inline' : 'none';
     simBtn.textContent = simulateActive ? 'Disable simulate' : 'Enable simulate';
+  }
+
+  // ── Recording ─────────────────────────────────────────────────────────────
+
+  function setRecordingUI(active, statusText, statusClass, errorText) {
+    recordingActive = active;
+    const btn   = document.getElementById('rec-toggle-btn');
+    const badge = document.getElementById('rec-badge');
+    const card  = document.getElementById('recording-card');
+    const st    = document.getElementById('rec-status');
+    const eb    = document.getElementById('rec-error-box');
+
+    btn.textContent = active ? 'Stop recording' : 'Start recording';
+    btn.className   = active ? 'recording' : '';
+    badge.style.display = active ? 'inline' : 'none';
+    card.style.borderColor = active ? 'var(--warn)' : 'var(--border)';
+
+    st.textContent  = statusText || '';
+    st.className    = 'rec-status ' + (statusClass || '');
+
+    if (errorText) {
+      eb.textContent    = errorText;
+      eb.style.display  = 'block';
+    } else {
+      eb.style.display  = 'none';
+    }
+  }
+
+  async function toggleRecording() {
+    const endpoint = recordingActive ? '/recording/stop' : '/recording/start';
+    try {
+      const res = await fetch(endpoint, { method: 'POST' });
+      const d   = await res.json();
+      if (!res.ok) {
+        // Server returned an error — stay stopped, show message
+        setRecordingUI(false,
+          'Failed to start.',
+          'err',
+          `\u26a0 ${d.detail || 'Unknown error starting recording.'}\n\nThis usually means the Railway filesystem is ephemeral. Check the Railway volume configuration or try running the server locally.`
+        );
+        return;
+      }
+      if (recordingActive) {
+        // just stopped
+        setRecordingUI(false,
+          `Stopped. ${d.rows_written} row${d.rows_written !== 1 ? 's' : ''} written to ${d.log_file}.`,
+          'ok',
+          null
+        );
+      } else {
+        setRecordingUI(true, `Recording to ${d.log_file}…`, 'ok', null);
+        pollRecording();
+      }
+    } catch(e) {
+      setRecordingUI(false, 'Server unreachable.', 'err',
+        '\u26a0 Could not reach /recording/start — is the server online?');
+    }
+  }
+
+  async function pollRecording() {
+    if (!recordingActive) return;
+    try {
+      const res = await fetch('/recording/status');
+      const d   = await res.json();
+      if (!d.active) {
+        setRecordingUI(false, `Stopped externally. ${d.rows} rows written.`, 'ok', null);
+        return;
+      }
+      let statusText = `● ${d.rows} row${d.rows !== 1 ? 's' : ''} written`;
+      if (d.elapsed_seconds !== null) statusText += ` · ${d.elapsed_seconds}s`;
+      if (d.file_exists) statusText += ` · ${d.file_size_bytes}B on disk`;
+      const errorText = d.last_error
+        ? `\u26a0 Last write error: ${d.last_error}\n\nRows may not be persisting. Railway's filesystem may be read-only — check that you have a writable volume mounted, or add the LOG_FILE env var pointing to /data/biofeedback_log.csv if a volume is attached.`
+        : null;
+      setRecordingUI(true, statusText, d.last_error ? 'err' : 'ok', errorText);
+    } catch(e) { /* server blip, retry */ }
+    setTimeout(pollRecording, 2000);
+  }
+
+  // ── Download All ───────────────────────────────────────────────────────────
+
+  async function downloadAll() {
+    const dlErr = document.getElementById('dl-error-box');
+    dlErr.style.display = 'none';
+    try {
+      const res = await fetch('/download-all');
+      if (res.ok) {
+        // Trigger real download
+        const blob = await res.blob();
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href     = url;
+        a.download = 'biofeedback_session.zip';
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+      let detail = '';
+      try { const d = await res.json(); detail = d.detail || ''; } catch(_) {}
+      let advice = '';
+      if (res.status === 404) {
+        if (detail.includes('empty')) {
+          advice = 'The log file exists but has no rows yet. Start a recording session first and let some data accumulate.';
+        } else {
+          advice = 'No log file found on the server.\n\n' +
+            '\u2022 Make sure you have pressed "Start recording" before playing.\n' +
+            '\u2022 On Railway the default filesystem is ephemeral — data written during one deploy may vanish. Attach a Railway Volume and set LOG_FILE=/data/biofeedback_log.csv in your environment variables.\n' +
+            '\u2022 If you just want to verify the file is being created, check the Railway logs for "[Recording] Started" and row-count messages.';
+        }
+      } else if (res.status === 500) {
+        advice = `Server error while generating the export:\n${detail}\n\nThis is likely a missing matplotlib dependency. Add it to your requirements.txt and redeploy.`;
+      } else {
+        advice = detail || `HTTP ${res.status} — unexpected error.`;
+      }
+      dlErr.textContent   = '\u26a0 Download failed\n\n' + advice;
+      dlErr.style.display = 'block';
+    } catch(e) {
+      dlErr.textContent   = '\u26a0 Could not reach /download-all — is the server online?';
+      dlErr.style.display = 'block';
+    }
   }
 
   async function poll() {
