@@ -860,7 +860,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         setRecordingUI(false,
           'Failed to start.',
           'err',
-          `\u26a0 ${d.detail || 'Unknown error starting recording.'}\n\nThis usually means the Railway filesystem is ephemeral. Check the Railway volume configuration or try running the server locally.`
+          `\u26a0 ${d.detail || 'Unknown error starting recording.'}\\n\\nThis usually means the Railway filesystem is ephemeral. Check the Railway volume configuration or try running the server locally.`
         );
         return;
       }
@@ -894,7 +894,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (d.elapsed_seconds !== null) statusText += ` · ${d.elapsed_seconds}s`;
       if (d.file_exists) statusText += ` · ${d.file_size_bytes}B on disk`;
       const errorText = d.last_error
-        ? `\u26a0 Last write error: ${d.last_error}\n\nRows may not be persisting. Railway's filesystem may be read-only — check that you have a writable volume mounted, or add the LOG_FILE env var pointing to /data/biofeedback_log.csv if a volume is attached.`
+        ? `\u26a0 Last write error: ${d.last_error}\\n\\nRows may not be persisting. Railway's filesystem may be read-only \u2014 check that you have a writable volume mounted, or add the LOG_FILE env var pointing to /data/biofeedback_log.csv if a volume is attached.`
         : null;
       setRecordingUI(true, statusText, d.last_error ? 'err' : 'ok', errorText);
     } catch(e) { /* server blip, retry */ }
@@ -926,17 +926,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (detail.includes('empty')) {
           advice = 'The log file exists but has no rows yet. Start a recording session first and let some data accumulate.';
         } else {
-          advice = 'No log file found on the server.\n\n' +
-            '\u2022 Make sure you have pressed "Start recording" before playing.\n' +
-            '\u2022 On Railway the default filesystem is ephemeral — data written during one deploy may vanish. Attach a Railway Volume and set LOG_FILE=/data/biofeedback_log.csv in your environment variables.\n' +
-            '\u2022 If you just want to verify the file is being created, check the Railway logs for "[Recording] Started" and row-count messages.';
+          advice = 'No log file found on the server.\\n\\n\\u2022 Make sure you have pressed "Start recording" before playing.\\n\\u2022 On Railway the default filesystem is ephemeral \u2014 data written during one deploy may vanish. Attach a Railway Volume and set LOG_FILE=/data/biofeedback_log.csv in your environment variables.\\n\\u2022 If you just want to verify the file is being created, check the Railway logs for "[Recording] Started" and row-count messages.';
         }
       } else if (res.status === 500) {
-        advice = `Server error while generating the export:\n${detail}\n\nThis is likely a missing matplotlib dependency. Add it to your requirements.txt and redeploy.`;
+        advice = `Server error while generating the export:\\n${detail}\\n\\nThis is likely a missing matplotlib dependency. Add it to your requirements.txt and redeploy.`;
       } else {
         advice = detail || `HTTP ${res.status} — unexpected error.`;
       }
-      dlErr.textContent   = '\u26a0 Download failed\n\n' + advice;
+      dlErr.textContent   = '\\u26a0 Download failed\\n\\n' + advice;
       dlErr.style.display = 'block';
     } catch(e) {
       dlErr.textContent   = '\u26a0 Could not reach /download-all — is the server online?';
