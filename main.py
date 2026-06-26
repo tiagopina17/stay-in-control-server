@@ -278,12 +278,14 @@ def set_threshold(body: ThresholdUpdate):
 @app.post("/capture-baseline")
 def capture_baseline():
     """Capture current HR as the player's baseline."""
-    hr = state["heart_rate"]
+    # Use effective_heart_rate() so it works in Simulate Mode too!
+    hr = effective_heart_rate() 
+    
     if hr <= 0:
         raise HTTPException(status_code=412, detail="No heart rate data available yet")
+    
     state["baseline"] = hr
     return {"ok": True, "baseline_captured": hr}
-
 
 # ─────────────────────────────────────────────
 # DEV OVERRIDE ENDPOINTS
